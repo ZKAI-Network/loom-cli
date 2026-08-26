@@ -73,7 +73,9 @@ jobs:
   publish-npm:
     needs: release
     runs-on: ubuntu-latest
-    # Requires the NPM_TOKEN secret (a publish token for the @embed-ai org).
+    # Opt-in: set repo variable PUBLISH_NPM=true and add the NPM_TOKEN secret
+    # (a publish token for the @embed-ai org) to enable.
+    if: ${{ vars.PUBLISH_NPM == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -92,7 +94,9 @@ jobs:
   bump-brew:
     needs: release
     runs-on: ubuntu-latest
-    # Requires HOMEBREW_TAP_TOKEN (a PAT with contents:write on ZKAI-Network/homebrew-loom).
+    # Opt-in: set repo variable PUBLISH_BREW=true and add the HOMEBREW_TAP_TOKEN
+    # secret (a PAT with contents:write on ZKAI-Network/homebrew-loom) to enable.
+    if: ${{ vars.PUBLISH_BREW == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - name: Render + push formula
