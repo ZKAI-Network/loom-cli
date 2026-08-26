@@ -1,0 +1,124 @@
+name: Release loom CLI
+
+# Runs when a version tag is pushed in the PUBLIC loom-cli repo (this file is
+# inert inside the private monorepo — GitHub only reads .github at a repo root).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14,      os: darwin, arch: arm64 }
+          - { runner: macos-13,      os: darwin, arch: x86_64 }
+          - { runner: ubuntu-latest, os: linux,  arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build self-contained binary
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          python -m pip install pyinstaller
+          pyinstaller --onefile --name loom --paths . \
+            --collect-all rich --collect-submodules loom_cli \
+            pyinstaller_entry.py
+          mv dist/loom "dist/loom-${{ matrix.os }}-${{ matrix.arch }}"
+      - name: Smoke test
+        run: "./dist/loom-${{ matrix.os }}-${{ matrix.arch }} --version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loom-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/loom-${{ matrix.os }}-${{ matrix.arch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum loom-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --generate-notes \
+            artifacts/loom-* artifacts/SHA256SUMS
+
+  publish-npm:
+    needs: release
+    runs-on: ubuntu-latest
+    # Requires the NPM_TOKEN secret (a publish token for the @embed-ai org).
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish @embed-ai/loom
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          npm version --no-git-tag-version --allow-same-version "${TAG#v}"
+          npm publish --access public
+
+  bump-brew:
+    needs: release
+    runs-on: ubuntu-latest
+    # Requires HOMEBREW_TAP_TOKEN (a PAT with contents:write on ZKAI-Network/homebrew-loom).
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render + push formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAP_REPO: ZKAI-Network/homebrew-loom
+        run: |
+          VER="${TAG#v}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          # Pull the published checksums and pick out each arch.
+          curl -fsSL "${BASE}/SHA256SUMS" -o SHA256SUMS
+          sha() { grep " loom-$1\$" SHA256SUMS | awk '{print $1}'; }
+          sed \
+            -e "s/__VERSION__/${VER}/g" \
+            -e "s/__SHA_DARWIN_ARM64__/$(sha darwin-arm64)/g" \
+            -e "s/__SHA_DARWIN_X86_64__/$(sha darwin-x86_64)/g" \
+            -e "s/__SHA_LINUX_ARM64__/$(sha linux-arm64)/g" \
+            -e "s/__SHA_LINUX_X86_64__/$(sha linux-x86_64)/g" \
+            homebrew/loom.rb.tmpl > loom.rb
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TAP_REPO}.git" tap
+          mkdir -p tap/Formula
+          cp loom.rb tap/Formula/loom.rb
+          cd tap
+          git config user.name "loom-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git add Formula/loom.rb
+          git commit -m "loom ${VER}" || { echo "no change"; exit 0; }
+          git push

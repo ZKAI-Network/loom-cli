@@ -1,0 +1,28 @@
+{
+  "name": "@embed-ai/loom",
+  "version": "0.1.0",
+  "description": "Loom command-line client — sign in and run the Loom agent from your terminal.",
+  "bin": {
+    "loom": "bin/loom.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/download-binary.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "license": "UNLICENSED",
+  "homepage": "https://loom.mbd.xyz"
+}

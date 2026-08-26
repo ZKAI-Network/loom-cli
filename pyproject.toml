@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loom-cli"
+dynamic = ["version"]
+description = "Loom command-line client — sign in and run the Loom agent from your terminal."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Loom" }]
+dependencies = [
+  "httpx>=0.27",
+  "rich>=13",
+]
+
+[project.scripts]
+loom = "loom_cli.__main__:main"
+
+[tool.setuptools]
+packages = ["loom_cli"]
+
+[tool.setuptools.dynamic]
+version = { attr = "loom_cli.__version__" }
