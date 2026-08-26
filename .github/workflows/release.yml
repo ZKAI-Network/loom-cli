@@ -21,9 +21,11 @@ jobs:
       matrix:
         include:
           - { runner: macos-14,      os: darwin, arch: arm64 }
-          - { runner: macos-13,      os: darwin, arch: x86_64 }
           - { runner: ubuntu-latest, os: linux,  arch: x86_64 }
           - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
+          # TODO(before public launch): re-add Intel macOS once macOS runner
+          # minutes are available for this repo:
+          # - { runner: macos-13, os: darwin, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
