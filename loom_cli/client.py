@@ -1983,8 +1983,19 @@ def main(argv: list[str]) -> int:
                     ws_url = server.replace("https://", "wss://").replace("http://", "ws://")
                     ws_url = f"{ws_url}/v1/sessions/{session_id}/local-tools"
                     headers = _auth_headers(server)
+                    conn_kwargs = {"additional_headers": headers, "close_timeout": 5}
+                    # For wss, verify against certifi's CA bundle (as httpx does).
+                    # A frozen (PyInstaller) build has no system CA path, so the
+                    # stdlib default context fails with CERTIFICATE_VERIFY_FAILED.
+                    if ws_url.startswith("wss://"):
+                        import ssl as _ssl
+                        try:
+                            import certifi
+                            conn_kwargs["ssl"] = _ssl.create_default_context(cafile=certifi.where())
+                        except Exception:
+                            conn_kwargs["ssl"] = _ssl.create_default_context()
                     try:
-                        with wsc.connect(ws_url, additional_headers=headers, close_timeout=5) as ws:
+                        with wsc.connect(ws_url, **conn_kwargs) as ws:
                             print(f"local tools: tunnel connected ({args.workspace or '.'})", file=sys.stderr)
                             while True:
                                 raw = ws.recv()

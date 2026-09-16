@@ -47,6 +47,7 @@ jobs:
           $ARCH python -m PyInstaller --onefile --name loom --paths . \
             --collect-all rich --collect-submodules loom_cli \
             --collect-submodules websockets \
+            --collect-data certifi \
             pyinstaller_entry.py
           mv dist/loom "dist/loom-${{ matrix.os }}-${{ matrix.arch }}"
       - name: Smoke test (+ verify macOS arch)
