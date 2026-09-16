@@ -12,7 +12,7 @@ if (!fs.existsSync(bin)) {
   console.error(
     "[loom] binary not found — the install step may have failed.\n" +
       "Reinstall with `npm install -g @embed-ai/loom`, or use:\n" +
-      "  curl -fsSL https://loom.mbd.xyz/install.sh | sh"
+      "  curl -fsSL https://raw.githubusercontent.com/ZKAI-Network/loom-cli/main/install.sh | sh"
   );
   process.exit(1);
 }

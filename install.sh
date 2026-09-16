@@ -1,7 +1,7 @@
 #!/bin/sh
 # Loom CLI installer.
 #
-#   curl -fsSL https://loom.mbd.xyz/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ZKAI-Network/loom-cli/main/install.sh | sh
 #
 # Downloads the right prebuilt `loom` binary for your OS/arch, verifies its
 # checksum, and installs it to ~/.local/bin (override with LOOM_INSTALL_DIR).

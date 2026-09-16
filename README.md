@@ -7,7 +7,7 @@ and engines as the web app. Works like `claude`: `loom login`, then `loom`.
 
 ```bash
 # curl
-curl -fsSL https://loom.mbd.xyz/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ZKAI-Network/loom-cli/main/install.sh | sh
 
 # Homebrew — one-liner
 brew install ZKAI-Network/loom/loom

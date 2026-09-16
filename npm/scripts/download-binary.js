@@ -75,7 +75,7 @@ async function main() {
     console.log(`[loom] Installed → ${dest}`);
   } catch (err) {
     console.error(`[loom] Install failed: ${err.message}`);
-    console.error(`[loom] You can retry, or install via: curl -fsSL https://loom.mbd.xyz/install.sh | sh`);
+    console.error(`[loom] You can retry, or install via: curl -fsSL https://raw.githubusercontent.com/ZKAI-Network/loom-cli/main/install.sh | sh`);
     process.exit(1);
   }
 }
