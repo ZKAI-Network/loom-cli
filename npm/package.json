@@ -1,6 +1,6 @@
 {
   "name": "@embed-ai/loom",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Loom command-line client — sign in and run the Loom agent from your terminal.",
   "bin": {
     "loom": "bin/loom.js"
