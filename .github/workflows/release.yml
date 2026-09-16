@@ -20,12 +20,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS Intel is built on an Apple-Silicon runner via an x86_64 Python
-          # (Rosetta) — GitHub's Intel `macos-13` runner is being retired.
-          - { runner: macos-14,      os: darwin, arch: arm64,  py_arch: arm64 }
-          - { runner: macos-14,      os: darwin, arch: x86_64, py_arch: x64 }
-          - { runner: ubuntu-latest, os: linux,  arch: x86_64, py_arch: x64 }
-          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64, py_arch: arm64 }
+          # macOS Intel is built on an Apple-Silicon runner: setup-python's macOS
+          # build is universal2, so we run the x86_64 slice via `arch -x86_64`
+          # (Rosetta) to freeze a genuine x86_64 binary — GitHub's Intel
+          # `macos-13` runner is being retired.
+          - { runner: macos-14,      os: darwin, arch: arm64,  py_arch: arm64, arch_prefix: "" }
+          - { runner: macos-14,      os: darwin, arch: x86_64, py_arch: x64,   arch_prefix: "arch -x86_64" }
+          - { runner: ubuntu-latest, os: linux,  arch: x86_64, py_arch: x64,   arch_prefix: "" }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64, py_arch: arm64, arch_prefix: "" }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -34,11 +36,15 @@ jobs:
           python-version: "3.12"
           architecture: ${{ matrix.py_arch }}
       - name: Build self-contained binary
+        env:
+          ARCH: ${{ matrix.arch_prefix }}
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install .
-          python -m pip install pyinstaller
-          pyinstaller --onefile --name loom --paths . \
+          # $ARCH is `arch -x86_64` for the macOS Intel build, empty otherwise —
+          # it forces PyInstaller to freeze for the intended CPU slice.
+          $ARCH python -m pip install --upgrade pip
+          $ARCH python -m pip install .
+          $ARCH python -m pip install pyinstaller
+          $ARCH python -m PyInstaller --onefile --name loom --paths . \
             --collect-all rich --collect-submodules loom_cli \
             --collect-submodules websockets \
             pyinstaller_entry.py
