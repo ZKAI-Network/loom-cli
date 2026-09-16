@@ -20,16 +20,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-14,      os: darwin, arch: arm64 }
-          - { runner: macos-13,      os: darwin, arch: x86_64 }
-          - { runner: ubuntu-latest, os: linux,  arch: x86_64 }
-          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
+          # macOS Intel is built on an Apple-Silicon runner via an x86_64 Python
+          # (Rosetta) — GitHub's Intel `macos-13` runner is being retired.
+          - { runner: macos-14,      os: darwin, arch: arm64,  py_arch: arm64 }
+          - { runner: macos-14,      os: darwin, arch: x86_64, py_arch: x64 }
+          - { runner: ubuntu-latest, os: linux,  arch: x86_64, py_arch: x64 }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64, py_arch: arm64 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          architecture: ${{ matrix.py_arch }}
       - name: Build self-contained binary
         run: |
           python -m pip install --upgrade pip
@@ -40,8 +43,16 @@ jobs:
             --collect-submodules websockets \
             pyinstaller_entry.py
           mv dist/loom "dist/loom-${{ matrix.os }}-${{ matrix.arch }}"
-      - name: Smoke test
-        run: "./dist/loom-${{ matrix.os }}-${{ matrix.arch }} --version"
+      - name: Smoke test (+ verify macOS arch)
+        run: |
+          BIN="dist/loom-${{ matrix.os }}-${{ matrix.arch }}"
+          "./$BIN" --version
+          if [ "${{ matrix.os }}" = "darwin" ]; then
+            file "$BIN"
+            lipo -archs "$BIN"
+            lipo -archs "$BIN" | grep -qw "${{ matrix.arch }}" \
+              || { echo "arch mismatch: expected ${{ matrix.arch }}"; exit 1; }
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: loom-${{ matrix.os }}-${{ matrix.arch }}
