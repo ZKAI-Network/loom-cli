@@ -38,6 +38,9 @@ def remember_default_server(server: str) -> None:
             data = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             data = {}
+    if not isinstance(data, dict):
+        # A valid but wrong-shaped file (e.g. ``[]``) must not crash login.
+        data = {}
     data["server"] = server.rstrip("/")
     path.write_text(json.dumps(data, indent=2))
 
@@ -49,6 +52,8 @@ def _saved_default_server() -> str | None:
     try:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
         return None
     server = data.get("server")
     return server if isinstance(server, str) and server else None

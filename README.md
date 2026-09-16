@@ -9,8 +9,11 @@ and engines as the web app. Works like `claude`: `loom login`, then `loom`.
 # curl
 curl -fsSL https://loom.mbd.xyz/install.sh | sh
 
-# Homebrew
+# Homebrew — one-liner
 brew install ZKAI-Network/loom/loom
+# …or tap once, then use the short name
+brew tap ZKAI-Network/loom
+brew install loom
 
 # npm
 npm install -g @embed-ai/loom

@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import httpx
 
@@ -40,6 +41,7 @@ _STREAM_TIMEOUT = httpx.Timeout(600.0, connect=15.0)  # tool calls hold the stre
 
 # The chat window's core selectors.
 HARNESSES = ["claude-sdk", "openai-agents", "codex", "cursor", "pi", "antigravity", "copilot"]
+DEFAULT_HARNESS = "pi"
 ALL_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 # Per-engine capability rules — mirror the web app's capability tables so the
@@ -82,8 +84,8 @@ DEFAULT_PROJECT = "Scratch"
 
 
 def derive_project(workspace: str | None) -> str | None:
-    """Repo/dir name from a workspace (local path or ``<url>[#branch]``), like
-    the web's deriveRepoName; ``None`` when there's no workspace."""
+    """Repo/dir name from a workspace (local path or ``<url>[#branch]``), matching
+    how the web app labels a session; ``None`` when there's no workspace."""
     if not workspace:
         return None
     w = workspace.strip().split("#", 1)[0].rstrip("/")
@@ -230,11 +232,13 @@ def resolve_execution(
         if compute:
             body["compute"] = compute
         # Clamp to the API's second bounds so a too-small value can't 422.
-        if exec_timeout_s:
+        # Guard on ``is not None`` (not truthiness) so an explicit 0 is clamped to
+        # the documented minimum rather than silently dropped to the server default.
+        if exec_timeout_s is not None:
             body["exec_timeout_s"] = _clamp(exec_timeout_s, 30, 86400)
-        if sandbox_lifetime_s:
+        if sandbox_lifetime_s is not None:
             body["sandbox_lifetime_s"] = _clamp(sandbox_lifetime_s, 300, 86400)
-        if idle_timeout_s:
+        if idle_timeout_s is not None:
             body["idle_timeout_s"] = _clamp(idle_timeout_s, 60, 86400)
         for k, v in (aide_models or {}).items():
             if v:
@@ -411,15 +415,26 @@ def _slug(text: str, maxlen: int = 48) -> str:
 
 def write_plan_file(task: str, text: str) -> str | None:
     """Save a produced plan to ~/.claude/plans/<slug>.md (matches the web's plan
-    folder; claude-sdk returns the plan in-conversation rather than writing one)."""
+    folder; claude-sdk returns the plan in-conversation rather than writing one).
+
+    Returns ``None`` (instead of raising) if the plan can't be written, so a
+    read-only home / full disk never terminates the caller."""
     if not text.strip():
         return None
-    d = os.path.expanduser("~/.claude/plans")
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, _slug(task) + ".md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(f"# Plan: {task}\n\n{text.strip()}\n")
-    return path
+    try:
+        import hashlib
+        d = os.path.expanduser("~/.claude/plans")
+        os.makedirs(d, exist_ok=True)
+        # Append a short hash of the full task so two tasks that share a 48-char
+        # slug prefix don't overwrite each other's saved plan.
+        digest = hashlib.sha1(task.encode("utf-8")).hexdigest()[:6]
+        path = os.path.join(d, f"{_slug(task)}-{digest}.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# Plan: {task}\n\n{text.strip()}\n")
+        return path
+    except OSError as e:
+        print(f"(could not save plan file: {e})", file=sys.stderr)
+        return None
 
 
 def list_models(client: httpx.Client, server: str, agent_id: str, harness: str) -> list[str]:
@@ -565,7 +580,9 @@ def load_all_defaults() -> dict:
     try:
         with open(_DEFAULTS_PATH, encoding="utf-8") as fh:
             d = json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
+        # Missing, unreadable, or a directory — treat as "no defaults" rather
+        # than crashing every CLI invocation on the optional defaults file.
         return {}
     if not isinstance(d, dict):
         return {}
@@ -590,7 +607,7 @@ def defaults_configured(server: str) -> bool:
 
 def save_defaults(server: str, cfg: dict) -> None:
     """Persist ``_DEFAULT_KEYS`` from ``cfg`` under ``server``'s bucket, so each
-    server (prod / staging / local / any VM) keeps its own defaults."""
+    server (prod / local / any VM) keeps its own defaults."""
     alld = load_all_defaults()
     bucket = dict(alld.get(server) or {})
     for k in _DEFAULT_KEYS:
@@ -629,12 +646,12 @@ def run_wizard(client: httpx.Client, server: str, agent_id: str, cfg: dict, *,
     everything else uses the saved defaults. Fast mode is offered when
     supported; Plan mode is not asked here (it's a trigger via /plan)."""
     if not sys.stdin.isatty():
-        cfg["harness"] = cfg.get("harness") or "claude-sdk"
+        cfg["harness"] = cfg.get("harness") or DEFAULT_HARNESS
         return cfg
     if not ask_all:
         # Returning user: keep saved engine/model/effort/fast/customize/data
         # source; only the compute tier (below) is asked each session.
-        cfg["harness"] = cfg.get("harness") or "claude-sdk"
+        cfg["harness"] = cfg.get("harness") or DEFAULT_HARNESS
         if not effort_levels(cfg["harness"]):
             cfg["effort"] = None
         if cfg.get("host_type") == "managed":
@@ -645,7 +662,9 @@ def run_wizard(client: httpx.Client, server: str, agent_id: str, cfg: dict, *,
             cfg["compute"] = None if chosen == "(server default)" else chosen
         return cfg
     print(_c("2", "Configure this session — ↑/↓ then Enter (saved as your defaults):"))
-    cfg["harness"] = _select("Engine", HARNESSES, cfg.get("harness") or "claude-sdk") or "claude-sdk"
+    cfg["harness"] = _select(
+        "Engine", HARNESSES, cfg.get("harness") or DEFAULT_HARNESS
+    ) or DEFAULT_HARNESS
 
     models = list_models(client, server, agent_id, cfg["harness"])
     if models:
@@ -792,6 +811,16 @@ def handle_command(client: httpx.Client, server: str, agent_id: str, state: dict
             print("  " + json.dumps(connections_status(client, server))[:500])
         except Exception as exc:  # noqa: BLE001
             print(_c("2", f"  failed: {exc}"))
+    elif cmd == "/share":
+        try:
+            response = client.post(f"{server}/v1/sessions/{sid}/pi-share", timeout=75.0)
+            response.raise_for_status()
+            url = response.json()["url"]
+            print(_c("2", f"  → Pi share: {url}"))
+        except httpx.HTTPStatusError as exc:
+            print(_c("2", f"  failed: {exc.response.status_code} {exc.response.text[:200]}"))
+        except Exception as exc:  # noqa: BLE001
+            print(_c("2", f"  failed: {exc}"))
     elif cmd == "/project":
         if arg is None:
             print(f"  project: {state.get('project') or DEFAULT_PROJECT}  (/project <name> to move, /project \"\" to remove)")
@@ -930,7 +959,7 @@ def _post_event(server: str, session_id: str, body: dict) -> None:
             raise RuntimeError(
                 "the server has no runner bound to this session (503). On a bare "
                 "server nothing auto-launches one; use a deployment that provisions "
-                "a runner/host (staging/prod), or start the local stack fully."
+                "a managed runner/host, or point --server at a fully running server."
             )
         r.raise_for_status()
 
@@ -943,10 +972,9 @@ def _post_message(server: str, session_id: str, text: str) -> None:
 
 
 def _skill_event(name: str, arguments: str) -> dict:
-    """The web's slash-command wire shape (types.ts): invoke skill ``name`` with
-    ``arguments`` (everything after the ``/name`` token). The server resolves and
-    runs the skill server-side — routes/sessions.py
-    ``_dispatch_skill_slash_command_to_runner`` — exactly as the web composer does."""
+    """The slash-command wire shape: invoke skill ``name`` with ``arguments``
+    (everything after the ``/name`` token). The server resolves and runs the
+    skill server-side, exactly as the web composer does."""
     return {"type": "slash_command",
             "data": {"kind": "skill", "name": name, "arguments": arguments}}
 
@@ -1295,6 +1323,13 @@ def run_turn(
         time.sleep(0.25)  # let the stream establish first (no server-side replay)
         try:
             if event is not None:
+                # Files attached just before a skill/slash invocation are delivered
+                # as a user message first, so the skill run has them in context
+                # (a bare ``slash_command`` event carries no content parts).
+                if attachments:
+                    _post_event(server, session_id,
+                                {"type": "message",
+                                 "data": {"role": "user", "content": list(attachments)}})
                 _post_event(server, session_id, event)
             elif attachments:
                 content = list(attachments)
@@ -1513,7 +1548,7 @@ _BUILTIN_CMDS = {
     "/exit", "/quit", "/help", "/skills", "/settings", "/fast", "/compute",
     "/datasource", "/storage", "/connections", "/project", "/engine", "/model",
     "/effort", "/attach", "/image", "/title", "/archive", "/usage", "/todos",
-    "/reasoning", "/sessions",
+    "/reasoning", "/sessions", "/share",
 }
 
 # (command, argument hint, one-line description) — the source for /help and docs.
@@ -1534,6 +1569,7 @@ _COMMAND_HELP = [
     ("/storage", "", "browse & attach a Cloud Storage bucket/object"),
     ("/connections", "", "show data connections (Google/GitHub/…)"),
     ("/sessions", "", "list your recent sessions (resume one with: loom --resume)"),
+    ("/share", "", "publish this Pi session as HTML and print its public link"),
     ("/title", "<name>", "rename this session"),
     ("/archive", "", "archive this session (owner only)"),
     ("/usage", "", "show context tokens and session cost"),
@@ -1570,7 +1606,7 @@ def interactive(
     auto_approve: bool = False,
 ) -> int:
     state = {"session_id": session_id, "project": project, **cfg}
-    state["harness"] = state.get("harness") or "claude-sdk"
+    state["harness"] = state.get("harness") or DEFAULT_HARNESS
     # Session-scoped approval memory: a "bypass all" / "don't ask again" choice
     # is remembered and auto-applied to every later prompt — including spawned
     # worker agents, whose prompts are mirrored onto this stream.
@@ -1633,8 +1669,12 @@ def interactive(
             print(_c("1;" + _PINK, "  ◆ planning…"))
             full = state.get("pending_directive", "") + task
             state["pending_directive"] = ""
+            # Consume any files queued with /attach so they reach the plan turn
+            # rather than silently carrying over to a later message.
+            atts = state.pop("pending_files", None) or None
+            state["pending_files"] = []
             plan_text: list[str] = []
-            _turn(full, sink=plan_text)
+            _turn(full, sink=plan_text, attachments=atts)
             try:  # revert so the next message runs normally
                 update_session(client, server, session_id, permission_mode="default")
             except Exception:  # noqa: BLE001
@@ -1652,7 +1692,11 @@ def interactive(
             # A known skill → invoke it as the web does (slash_command event).
             ev = _skill_slash(state, client, server, session_id, text)
             if ev is not None:
-                _turn(event=ev)
+                # Deliver any /attach-queued files with the skill run instead of
+                # letting them leak into a later unrelated message.
+                atts = state.pop("pending_files", None) or None
+                state["pending_files"] = []
+                _turn(event=ev, attachments=atts)
                 continue
             # Not a loom command and not a known skill: the web sends this as a
             # plaintext message. Do the same, but say so (it may be a typo).
@@ -1700,16 +1744,17 @@ def ensure_local_server(server: str, timeout: float = 150.0) -> bool:
 
 
 def choose_compute(current: str) -> tuple[str, str | None, str | None]:
-    """Interactive compute picker → (server, host_type, host_id). Always offers
-    the three backends: Loom ephemeral compute, this machine (local server,
-    auto-started), or another VM by URL."""
-    EPHEMERAL, LOCAL, VM = "Loom ephemeral compute", "This machine (local server)", "Another VM…"
-    default = EPHEMERAL if current.startswith("https") else LOCAL
-    pick = _select("Compute", [EPHEMERAL, LOCAL, VM], default)
-    if pick == LOCAL:
-        srv = "http://localhost:6767"
-        ensure_local_server(srv)
-        return srv, None, None  # auto-detect the local machine host
+    """Interactive compute picker → (server, host_type, host_id).
+
+    Thin-client mode: the user picks Loom managed compute (default)
+    or a custom VM. No local-server option — loom-cli is a thin
+    client like claude-cli; local dev uses ./run-stack.sh directly."""
+    is_local = current.startswith("http://localhost") or current.startswith("http://127.0.0.1")
+    if is_local:
+        return current, None, None
+    EPHEMERAL = "Loom ephemeral compute"
+    VM = "Another VM…"
+    pick = _select("Compute", [EPHEMERAL, VM], EPHEMERAL)
     if pick == VM:
         try:
             url = input(_c("1;" + _PINK, "  VM server URL: ")).strip().rstrip("/")
@@ -1723,7 +1768,8 @@ def choose_compute(current: str) -> tuple[str, str | None, str | None]:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="loom", add_help=True)
-    ap.add_argument("--server", required=True, help="Loom server base URL")
+    ap.add_argument("--server", default=os.environ.get("LOOM_SERVER", "https://loom.mbd.xyz"),
+                    help="Loom server base URL (default: https://loom.mbd.xyz or $LOOM_SERVER)")
     ap.add_argument("--harness", help="brain harness (claude-sdk | pi | codex | …)")
     ap.add_argument("--model", help="model override")
     ap.add_argument("--effort", choices=ALL_EFFORTS, help="reasoning effort (engine-dependent vocab)")
@@ -1779,8 +1825,24 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="auto-approve tool-approval requests (for non-interactive/scripted runs)",
     )
+    ap.add_argument("command", nargs="?", default=None,
+                    help="subcommand: login, logout, whoami, sessions, resume")
     args = ap.parse_args(argv)
     server = args.server.rstrip("/")
+
+    # Auth subcommands are normally handled by the front door (``__main__``);
+    # handle them here too so ``client.main`` stays self-contained if run directly.
+    if args.command in ("login", "logout", "whoami"):
+        from . import auth
+        if args.command == "login":
+            return auth.login(server)
+        if args.command == "logout":
+            return auth.logout(server)
+        return auth.whoami(server)
+    if args.command == "sessions":
+        args.list_sessions = True
+    elif args.command == "resume":
+        args.resume = True
 
     cfg = {
         "harness": args.harness, "model": args.model, "effort": args.effort,
@@ -1847,7 +1909,7 @@ def main(argv: list[str]) -> int:
                     # tier excluded — always asked). Mid-session /commands too.
                     save_defaults(server, cfg)
                 # Drop engine-unsupported knobs so we never send an invalid combo.
-                h = cfg["harness"] or "claude-sdk"
+                h = cfg["harness"] or DEFAULT_HARNESS
                 if cfg.get("effort") and cfg["effort"] not in (effort_levels(h) or []):
                     print(f"note: {h} ignores reasoning effort — dropping", file=sys.stderr)
                     cfg["effort"] = None
@@ -1899,9 +1961,50 @@ def main(argv: list[str]) -> int:
 
         if args.create_only:
             if not wait_until_live(client, server, session_id):
-                print("session did not become live in time", file=sys.stderr)
+                # Don't emit a "ready" session id or exit 0 — automation would
+                # treat an unavailable runner as ready and proceed on it.
+                print(f"session {session_id} did not become live in time", file=sys.stderr)
+                return 1
             print(session_id)
             return 0
+
+        # Start local file/shell tools with a WebSocket tunnel to the server.
+        # The remote agent calls local_read/local_write/local_shell through
+        # the tunnel — the server proxies the call to this CLI process.
+        _local_tunnel_thread = None
+        _is_remote = not server.startswith("http://localhost") and not server.startswith("http://127.0.0.1")
+        if _is_remote or os.environ.get("LOOM_LOCAL_TOOLS"):
+            try:
+                from . import local_tools as _lt
+                _lt._project_dir = Path(args.workspace or ".").resolve()
+
+                def _run_tunnel():
+                    import websockets.sync.client as wsc
+                    ws_url = server.replace("https://", "wss://").replace("http://", "ws://")
+                    ws_url = f"{ws_url}/v1/sessions/{session_id}/local-tools"
+                    headers = _auth_headers(server)
+                    try:
+                        with wsc.connect(ws_url, additional_headers=headers, close_timeout=5) as ws:
+                            print(f"local tools: tunnel connected ({args.workspace or '.'})", file=sys.stderr)
+                            while True:
+                                raw = ws.recv()
+                                frame = json.loads(raw)
+                                if frame.get("type") == "tool_call":
+                                    try:
+                                        output = _lt._handle_tool_call(frame["tool"], frame.get("arguments", {}))
+                                        ws.send(json.dumps({"type": "tool_result", "id": frame["id"], "output": output}))
+                                    except Exception as e:
+                                        ws.send(json.dumps({"type": "tool_error", "id": frame["id"], "error": str(e)}))
+                                elif frame.get("type") == "ping":
+                                    ws.send(json.dumps({"type": "pong"}))
+                    except Exception as e:
+                        print(f"local tools: tunnel closed ({e})", file=sys.stderr)
+
+                import threading
+                _local_tunnel_thread = threading.Thread(target=_run_tunnel, daemon=True)
+                _local_tunnel_thread.start()
+            except Exception as exc:
+                print(f"local tools: not started ({exc})", file=sys.stderr)
 
         # Upload any files/images to attach to the first message.
         init_atts: list[dict] = []
@@ -1918,6 +2021,21 @@ def main(argv: list[str]) -> int:
             # `-p "/deep-research <topic>"` runs that skill (web parity); other
             # slashes and plain text go through as a normal message.
             approvals: dict = {"bypass_all": False, "remembered": set()}
+            if args.prompt.strip() == "/share":
+                try:
+                    response = client.post(
+                        f"{server}/v1/sessions/{session_id}/pi-share",
+                        timeout=75.0,
+                    )
+                    response.raise_for_status()
+                    print(response.json()["url"])
+                    return 0
+                except httpx.HTTPStatusError as exc:
+                    print(
+                        f"share failed: {exc.response.status_code} {exc.response.text[:200]}",
+                        file=sys.stderr,
+                    )
+                    return 1
             skill_ev = None
             if args.prompt.startswith("/"):
                 cmd = args.prompt.split()[0]

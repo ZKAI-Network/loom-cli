@@ -39,6 +39,7 @@ jobs:
           python -m pip install pyinstaller
           pyinstaller --onefile --name loom --paths . \
             --collect-all rich --collect-submodules loom_cli \
+            --collect-submodules websockets \
             pyinstaller_entry.py
           mv dist/loom "dist/loom-${{ matrix.os }}-${{ matrix.arch }}"
       - name: Smoke test
